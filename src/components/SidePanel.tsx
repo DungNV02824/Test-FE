@@ -1,9 +1,19 @@
 import React, { useState, useEffect } from "react";
-import { Button, Space, Spin, message, Tag, Input, Checkbox } from "antd";
+import {
+  Button,
+  Space,
+  Spin,
+  message,
+  Tag,
+  Input,
+  Checkbox,
+  Modal,
+} from "antd";
 import {
   ReloadOutlined,
   DeleteOutlined,
   CloseCircleOutlined,
+  CloudUploadOutlined,
 } from "@ant-design/icons";
 import { AgGridReact } from "ag-grid-react";
 import { ColDef } from "ag-grid-community";
@@ -12,6 +22,8 @@ import "ag-grid-community/styles/ag-theme-quartz.css";
 import { debounce } from "lodash";
 import "./SidePanel.css";
 import { useMemo } from "react";
+import { ImageAPI } from "../api/imageAPI";
+
 interface ImageData {
   id: string;
   src: string;
@@ -22,6 +34,7 @@ interface ImageData {
   type?: string;
   isBackground?: boolean;
   isObject?: boolean;
+  uploading?: boolean;
 }
 
 const SidePanel: React.FC = () => {
@@ -30,6 +43,7 @@ const SidePanel: React.FC = () => {
   const [searchText, setSearchText] = useState("");
   const [rowData, setRowData] = useState<ImageData[]>([]);
   const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
+  const [uploading, setUploading] = useState(false);
 
   // Listen for messages from content script and request cached images on mount
   useEffect(() => {
@@ -182,6 +196,128 @@ const SidePanel: React.FC = () => {
     } else {
       setSelectedRows(new Set());
     }
+  };
+
+  const handleUploadSelected = async () => {
+    if (selectedRows.size === 0) {
+      message.warning("Vui lòng chọn ảnh để tải lên");
+      return;
+    }
+
+    setUploading(true);
+    let uploadedCount = 0;
+    let failedCount = 0;
+
+    for (const imageId of selectedRows) {
+      const image = images.find((img) => img.id === imageId);
+      if (!image) continue;
+
+      try {
+        // Mark as uploading
+        setImages((prev) =>
+          prev.map((img) =>
+            img.id === imageId ? { ...img, uploading: true } : img,
+          ),
+        );
+
+        // Convert image to base64
+        const response = await fetch(image.src);
+        const blob = await response.blob();
+        const reader = new FileReader();
+
+        await new Promise<void>((resolve, reject) => {
+          reader.onload = async () => {
+            try {
+              const base64 = reader.result as string;
+              const base64Data = base64.split(",")[1];
+
+              // Upload to backend
+              await ImageAPI.uploadImage(
+                image.id,
+                base64Data,
+                image.src,
+                blob.type || "image/jpeg",
+              );
+
+              uploadedCount++;
+              message.success(`Tải lên thành công: ${image.id}`);
+              resolve();
+            } catch (error) {
+              console.error(`Failed to upload ${imageId}:`, error);
+              failedCount++;
+              message.error(`Tải lên thất bại: ${image.id}`);
+              resolve();
+            }
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+
+        // Remove uploading flag
+        setImages((prev) =>
+          prev.map((img) =>
+            img.id === imageId ? { ...img, uploading: false } : img,
+          ),
+        );
+      } catch (error) {
+        console.error(`Error uploading ${imageId}:`, error);
+        failedCount++;
+        message.error(
+          `Lỗi: ${error instanceof Error ? error.message : "Unknown error"}`,
+        );
+        setImages((prev) =>
+          prev.map((img) =>
+            img.id === imageId ? { ...img, uploading: false } : img,
+          ),
+        );
+      }
+    }
+
+    setUploading(false);
+    setSelectedRows(new Set());
+    message.info(
+      `Hoàn tất: ${uploadedCount} thành công, ${failedCount} thất bại`,
+    );
+  };
+
+  const handleUploadToWordPress = async () => {
+    if (selectedRows.size === 0) {
+      message.warning("Vui lòng chọn ảnh để đẩy lên WordPress");
+      return;
+    }
+
+    Modal.confirm({
+      title: "Xác nhận đẩy lên WordPress",
+      content: `Bạn muốn đẩy ${selectedRows.size} ảnh lên WordPress Media?`,
+      okText: "Đồng ý",
+      cancelText: "Hủy",
+      onOk: async () => {
+        setUploading(true);
+        let successCount = 0;
+        let failedCount = 0;
+
+        for (const imageId of selectedRows) {
+          try {
+            const imageIdNum = parseInt(imageId.replace(/^\D+/, ""));
+            await ImageAPI.uploadToWordPress(imageIdNum);
+            successCount++;
+            message.success(`WordPress upload: ${imageId}`);
+          } catch (error) {
+            console.error(`Failed to upload to WordPress ${imageId}:`, error);
+            failedCount++;
+            message.error(
+              `WordPress upload failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+            );
+          }
+        }
+
+        setUploading(false);
+        setSelectedRows(new Set());
+        message.info(
+          `Hoàn tất: ${successCount} thành công, ${failedCount} thất bại`,
+        );
+      },
+    });
   };
 
   // Custom cell renderers
@@ -362,6 +498,37 @@ const SidePanel: React.FC = () => {
             Chọn: <strong>{selectedRows.size}</strong>
           </span>
         )}
+      </div>
+
+      <div
+        style={{
+          padding: "12px",
+          display: "flex",
+          gap: "8px",
+          flexWrap: "wrap",
+        }}
+      >
+        <Button
+          type="primary"
+          icon={<CloudUploadOutlined />}
+          onClick={handleUploadSelected}
+          disabled={selectedRows.size === 0}
+          loading={uploading}
+          size="small"
+        >
+          Tải lên BE
+        </Button>
+        <Button
+          type="primary"
+          style={{ backgroundColor: "#1890ff" }}
+          icon={<CloudUploadOutlined />}
+          onClick={handleUploadToWordPress}
+          disabled={selectedRows.size === 0}
+          loading={uploading}
+          size="small"
+        >
+          Tải lên WordPress
+        </Button>
       </div>
 
       {loading ? (
